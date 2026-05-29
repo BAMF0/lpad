@@ -24,7 +24,7 @@ against Ubuntu source package bugs without leaving the terminal.
 ## Installation
 
 ```bash
-pipx install git+https://git.launchpad.net/lpad
+pipx install git+https://github.com/BAMF0/lpad.git
 ```
 
 Or from a local clone:
