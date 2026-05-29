@@ -1,0 +1,18 @@
+[project]
+name = "lpad"
+version = "0.1.0"
+description = "A focused CLI tool for working with Launchpad bugs"
+authors = [
+    { name = "Simon Johnsson", email = "simon.johnsson@canonical.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "launchpadlib>=2.1.0",
+]
+
+[project.scripts]
+lpad = "lpad.main:main"
+
+[build-system]
+requires = ["uv_build>=0.9.27,<0.10.0"]
+build-backend = "uv_build"
