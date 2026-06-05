@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 
+import lpad.color as col
+
 
 def _slugify(text: str) -> str:
     """Convert a description string to a branch-safe slug.
@@ -23,15 +25,17 @@ def create_branch(bug_id: int) -> None:
 
     Exits with an error if not in a git repository or if git checkout fails.
     """
-    raw_desc = input("Branch description (short, e.g. 'fix crash on startup'): ").strip()
+    raw_desc = input(
+        col.prompt("Branch description (short, e.g. 'fix crash on startup'): ")
+    ).strip()
     if not raw_desc:
-        print("Error: description cannot be empty.", file=sys.stderr)
+        print(col.error("Error: description cannot be empty."), file=sys.stderr)
         sys.exit(1)
 
     slug = _slugify(raw_desc)
     if not slug:
         print(
-            "Error: description produced an empty slug after sanitization.",
+            col.error("Error: description produced an empty slug after sanitization."),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -43,11 +47,16 @@ def create_branch(bug_id: int) -> None:
             ["git", "checkout", "-b", branch_name],
             check=True,
         )
-        print(f"Created and switched to branch: {branch_name}")
+        print(
+            col.success("Created and switched to branch: ")
+            + col.branch_name(branch_name)
+        )
     except subprocess.CalledProcessError:
         print(
-            f"Error: failed to create branch '{branch_name}'. "
-            "Is there already a branch with this name?",
+            col.error(
+                f"Error: failed to create branch '{branch_name}'. "
+                "Is there already a branch with this name?"
+            ),
             file=sys.stderr,
         )
         sys.exit(1)

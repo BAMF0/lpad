@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 
+import lpad.color as col
+
 # Patterns for Launchpad source package remote URLs
 # e.g. git+ssh://git.launchpad.net/~user/ubuntu/+source/curl
 #      https://git.launchpad.net/~user/ubuntu/+source/curl
@@ -62,12 +64,12 @@ def detect_source_package() -> str:
 
     # Fall back to user prompt
     print(
-        "Could not detect source package from git remote.",
+        col.info("Could not detect source package from git remote."),
         file=sys.stderr,
     )
-    pkg = input("Enter source package name: ").strip()
+    pkg = input(col.prompt("Enter source package name: ")).strip()
     if not pkg:
-        print("Error: source package name cannot be empty.", file=sys.stderr)
+        print(col.error("Error: source package name cannot be empty."), file=sys.stderr)
         sys.exit(1)
     return pkg
 

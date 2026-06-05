@@ -1,6 +1,7 @@
-"""File-based cache for Launchpad bug lists.
+"""File-based cache for Launchpad bug lists and comments.
 
-Bugs are cached per source package in ~/.cache/lpad/<package>.json.
+Bug lists are cached per source package in ~/.cache/lpad/<package>.json.
+Comments are cached per bug in ~/.cache/lpad/comments/<bug_id>.json.
 Default TTL is 24 hours, overridable via the LPAD_CACHE_TTL environment
 variable (value in seconds).
 """
@@ -10,14 +11,19 @@ import os
 import time
 from pathlib import Path
 
-from lpad.bugs import BugSummary
+from lpad.bugs import BugSummary, Comment
 
 DEFAULT_TTL = 60 * 60 * 24  # 24 hours
 CACHE_DIR = Path.home() / ".cache" / "lpad"
+COMMENT_CACHE_DIR = CACHE_DIR / "comments"
 
 
 def _cache_path(package: str) -> Path:
     return CACHE_DIR / f"{package}.json"
+
+
+def _comment_cache_path(bug_id: int) -> Path:
+    return COMMENT_CACHE_DIR / f"{bug_id}.json"
 
 
 def _get_ttl() -> int:
@@ -26,6 +32,18 @@ def _get_ttl() -> int:
     except ValueError:
         return DEFAULT_TTL
 
+
+def _age_string(cached_at: float) -> str:
+    age_seconds = int(time.time() - cached_at)
+    if age_seconds < 60:
+        return f"{age_seconds}s ago"
+    elif age_seconds < 3600:
+        return f"{age_seconds // 60}m ago"
+    else:
+        return f"{age_seconds // 3600}h ago"
+
+
+# --- Bug list cache ---
 
 def load_cache(package: str) -> list[BugSummary] | None:
     """Load cached bugs for a package.
@@ -71,7 +89,7 @@ def save_cache(package: str, bugs: list[BugSummary]) -> None:
 
 
 def invalidate_cache(package: str) -> None:
-    """Delete the cache file for the given package."""
+    """Delete the bug list cache file for the given package."""
     path = _cache_path(package)
     if path.exists():
         path.unlink()
@@ -86,12 +104,69 @@ def cache_info(package: str) -> str | None:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    cached_at = data.get("cached_at", 0)
-    age_seconds = int(time.time() - cached_at)
-    if age_seconds < 60:
-        age = f"{age_seconds}s ago"
-    elif age_seconds < 3600:
-        age = f"{age_seconds // 60}m ago"
-    else:
-        age = f"{age_seconds // 3600}h ago"
+    age = _age_string(data.get("cached_at", 0))
     return f"cached {age} ({len(data.get('bugs', []))} bugs)"
+
+
+# --- Comment cache ---
+
+def load_comment_cache(bug_id: int) -> list[Comment] | None:
+    """Load cached comments for a bug.
+
+    Returns a list of Comment if the cache exists and is fresh,
+    or None if the cache is missing or stale.
+    """
+    path = _comment_cache_path(bug_id)
+    if not path.exists():
+        return None
+
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    cached_at = data.get("cached_at", 0)
+    if time.time() - cached_at > _get_ttl():
+        return None
+
+    return [Comment(**c) for c in data.get("comments", [])]
+
+
+def save_comment_cache(bug_id: int, comments: list[Comment]) -> None:
+    """Save a list of Comments to the cache for the given bug."""
+    COMMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _comment_cache_path(bug_id)
+    data = {
+        "cached_at": time.time(),
+        "bug_id": bug_id,
+        "comments": [
+            {
+                "index": c.index,
+                "author": c.author,
+                "date": c.date,
+                "body": c.body,
+            }
+            for c in comments
+        ],
+    }
+    path.write_text(json.dumps(data, indent=2))
+
+
+def invalidate_comment_cache(bug_id: int) -> None:
+    """Delete the comment cache file for the given bug."""
+    path = _comment_cache_path(bug_id)
+    if path.exists():
+        path.unlink()
+
+
+def comment_cache_info(bug_id: int) -> str | None:
+    """Return a human-readable string describing the comment cache age."""
+    path = _comment_cache_path(bug_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    age = _age_string(data.get("cached_at", 0))
+    return f"cached {age} ({len(data.get('comments', []))} comments)"

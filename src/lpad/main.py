@@ -3,6 +3,8 @@
 import argparse
 import sys
 
+import lpad.color as col
+
 
 def cmd_list(args: argparse.Namespace) -> None:
     from lpad.bugs import fzf_select_bug, print_bug_summary
@@ -20,10 +22,10 @@ def cmd_list(args: argparse.Namespace) -> None:
         bugs = get_package_bugs(lp, package)
     else:
         from lpad.cache import cache_info
-        print(f"Using cached bugs ({cache_info(package)}).", file=sys.stderr)
+        print(col.info(f"Using cached bugs ({cache_info(package)})."), file=sys.stderr)
 
     if not bugs:
-        print("No bugs found.")
+        print(col.info("No bugs found."))
         return
 
     selected = fzf_select_bug(bugs)
@@ -44,7 +46,7 @@ def cmd_branch(args: argparse.Namespace) -> None:
     bugs = get_package_bugs(lp, package)
     selected = fzf_select_bug(bugs)
     if selected is None:
-        print("No bug selected.")
+        print(col.info("No bug selected."))
         sys.exit(0)
     create_branch(selected.id)
 
@@ -65,13 +67,15 @@ def cmd_open(args: argparse.Namespace) -> None:
 
     branch = get_current_branch()
     if not branch:
-        print("Error: not inside a git repository.", file=sys.stderr)
+        print(col.error("Error: not inside a git repository."), file=sys.stderr)
         sys.exit(1)
 
     bug_id = parse_bug_number_from_branch(branch)
     if bug_id is None:
         print(
-            f"Error: current branch '{branch}' does not look like an lp<N>-* branch.",
+            col.error(
+                f"Error: current branch '{branch}' does not look like an lp<N>-* branch."
+            ),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -90,13 +94,15 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     branch = get_current_branch()
     if not branch:
-        print("Error: not inside a git repository.", file=sys.stderr)
+        print(col.error("Error: not inside a git repository."), file=sys.stderr)
         sys.exit(1)
 
     bug_id = parse_bug_number_from_branch(branch)
     if bug_id is None:
         print(
-            f"Error: current branch '{branch}' does not look like an lp<N>-* branch.",
+            col.error(
+                f"Error: current branch '{branch}' does not look like an lp<N>-* branch."
+            ),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -116,22 +122,89 @@ def cmd_subscribe(args: argparse.Namespace) -> None:
     bugs = get_package_bugs(lp, package)
     selected = fzf_select_bug(bugs)
     if selected is None:
-        print("No bug selected.")
+        print(col.info("No bug selected."))
         sys.exit(0)
     subscribe_to_bug(lp, selected.id)
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
     from lpad.auth import get_launchpad
-    from lpad.bugs import get_package_bugs
-    from lpad.cache import invalidate_cache
-    from lpad.repo import detect_source_package
+    from lpad.bugs import get_package_bugs, get_bug_comments
+    from lpad.cache import invalidate_cache, invalidate_comment_cache
+    from lpad.repo import detect_source_package, get_current_branch, parse_bug_number_from_branch
 
     package = detect_source_package()
     invalidate_cache(package)
     lp = get_launchpad()
     bugs = get_package_bugs(lp, package, force_refresh=True)
-    print(f"Cache updated: {len(bugs)} bugs for {package}.")
+    print(col.success(f"Cache updated: {len(bugs)} bugs for {package}."))
+
+    # Refresh comment cache only for the current branch's bug, if on one.
+    branch = get_current_branch()
+    bug_id = parse_bug_number_from_branch(branch) if branch else None
+    if bug_id is not None:
+        invalidate_comment_cache(bug_id)
+        comments = get_bug_comments(lp, bug_id, force_refresh=True)
+        print(col.success(
+            f"Comment cache updated: {len(comments)} comments for bug #{bug_id}."
+        ))
+    else:
+        print(col.info(
+            "Skipping comment cache refresh (not on an lp<N>-* branch)."
+        ))
+
+
+def cmd_comments(args: argparse.Namespace) -> None:
+    from lpad.bugs import get_bug_comments, print_comments
+    from lpad.repo import get_current_branch, parse_bug_number_from_branch
+
+    # Resolve bug ID: explicit arg takes priority, then branch name
+    if args.bug_id is not None:
+        bug_id = args.bug_id
+    else:
+        branch = get_current_branch()
+        if branch:
+            bug_id = parse_bug_number_from_branch(branch)
+        else:
+            bug_id = None
+
+    if bug_id is None:
+        print(
+            col.error(
+                "Error: no bug ID given and current branch is not an lp<N>-* branch.\n"
+                "Usage: lpad comments [bug_id]"
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Validate mutual exclusivity of --first/--last (argparse handles it, but
+    # --head/--tail are stored in the same dest so check here)
+    if args.first is not None and args.last is not None:
+        print(
+            col.error("Error: --first/--head and --last/--tail are mutually exclusive."),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from lpad.cache import load_comment_cache, comment_cache_info
+    comments = load_comment_cache(bug_id)
+    if comments is None:
+        from lpad.auth import get_launchpad
+        lp = get_launchpad()
+        comments = get_bug_comments(lp, bug_id)
+    else:
+        print(
+            col.info(f"Using cached comments ({comment_cache_info(bug_id)})."),
+            file=sys.stderr,
+        )
+
+    print_comments(
+        comments,
+        first=args.first,
+        last=args.last,
+        reverse=args.reverse,
+    )
 
 
 def cmd_preview(args: argparse.Namespace) -> None:
@@ -139,30 +212,29 @@ def cmd_preview(args: argparse.Namespace) -> None:
     from lpad.bugs import LAUNCHPAD_BUG_URL, print_bug_summary
     from lpad.cache import CACHE_DIR, load_cache
 
-    # fzf passes the first token of the selected line, e.g. "#2045432"
-    raw = args.bug_token.lstrip("#")
+    # fzf passes the first token of the selected line, strip ANSI then '#'
+    import re
+    raw = re.sub(r"\033\[[0-9;]*m", "", args.bug_token).lstrip("#")
     try:
         bug_id = int(raw)
     except ValueError:
-        print(f"(could not parse bug ID from: {args.bug_token!r})")
+        print(col.error(f"(could not parse bug ID from: {args.bug_token!r})"))
         return
 
-    # Scan all cache files — we don't need to detect the package since the
-    # bug ID is unique across packages and we just want the cached data.
+    # Scan all cache files — bug IDs are unique across packages
     if CACHE_DIR.exists():
         for cache_file in CACHE_DIR.glob("*.json"):
-            package = cache_file.stem
-            bugs = load_cache(package)
+            bugs = load_cache(cache_file.stem)
             if bugs:
                 for bug in bugs:
                     if bug.id == bug_id:
                         print_bug_summary(bug)
                         return
 
-    # Fallback: cache is cold or bug not found
-    print(f"Bug #{bug_id}")
-    print(f"  URL: {LAUNCHPAD_BUG_URL.format(bug_id=bug_id)}")
-    print("  (run 'lpad sync' to populate the cache for full preview)")
+    # Fallback: cache cold or bug not found
+    print(col.bug_id(f"Bug #{bug_id}"))
+    print(f"  {col.label('URL:')} {col.url(LAUNCHPAD_BUG_URL.format(bug_id=bug_id))}")
+    print(col.info("  (run 'lpad sync' to populate the cache for full preview)"))
 
 
 def main() -> None:
@@ -184,7 +256,7 @@ def main() -> None:
         description="A focused CLI tool for working with Launchpad bugs.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
-    subparsers.required = True
+    subparsers.required = False
 
     subparsers.add_parser(
         "list",
@@ -218,10 +290,48 @@ def main() -> None:
     )
     subparsers.add_parser(
         "sync",
-        help="Refresh the bug cache for the current source package",
+        help="Refresh the bug cache for the current source package (and comment cache if on an lp<N>-* branch)",
+    )
+
+    comments_parser = subparsers.add_parser(
+        "comments",
+        help="Show comments for the current branch's bug (or a given bug ID)",
+    )
+    comments_parser.add_argument(
+        "bug_id",
+        nargs="?",
+        type=int,
+        default=None,
+        help="Bug ID to show comments for (defaults to current branch's bug)",
+    )
+    comments_group = comments_parser.add_mutually_exclusive_group()
+    comments_group.add_argument(
+        "--first", "--head",
+        dest="first",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Show only the first N comments",
+    )
+    comments_group.add_argument(
+        "--last", "--tail",
+        dest="last",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Show only the last N comments",
+    )
+    comments_parser.add_argument(
+        "--reverse",
+        action="store_true",
+        default=False,
+        help="Display comments in reverse order (newest first)",
     )
 
     args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
 
     commands = {
         "list": cmd_list,
@@ -231,5 +341,6 @@ def main() -> None:
         "status": cmd_status,
         "subscribe": cmd_subscribe,
         "sync": cmd_sync,
+        "comments": cmd_comments,
     }
     commands[args.command](args)

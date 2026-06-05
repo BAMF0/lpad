@@ -8,10 +8,20 @@ import webbrowser
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import lpad.color as col
+
 if TYPE_CHECKING:
     from launchpadlib.launchpad import Launchpad
 
 LAUNCHPAD_BUG_URL = "https://bugs.launchpad.net/bugs/{bug_id}"
+
+
+@dataclass
+class Comment:
+    index: int    # 1-based; message[0] (the description) is skipped
+    author: str
+    date: str     # ISO 8601 string as returned by Launchpad
+    body: str
 
 
 @dataclass
@@ -24,10 +34,14 @@ class BugSummary:
     tags: list[str] = field(default_factory=list)
 
     def fzf_line(self) -> str:
-        assignee = self.assignee or "unassigned"
+        assignee_str = col.c(
+            f"({self.assignee or 'unassigned'})", col.DIM
+        )
         return (
-            f"#{self.id:<10} [{self.status:<13}] "
-            f"{self.importance:<10} {self.title}  ({assignee})"
+            f"{col.bug_id(f'#{self.id}'):<20} "
+            f"[{col.status_color(f'{self.status}'):<24}] "
+            f"{col.importance_color(f'{self.importance}'):<20} "
+            f"{self.title}  {assignee_str}"
         )
 
 
@@ -36,9 +50,11 @@ def _check_fzf() -> None:
     result = subprocess.run(["which", "fzf"], capture_output=True)
     if result.returncode != 0:
         print(
-            "Error: fzf is not installed.\n"
-            "Install it with:  sudo apt install fzf\n"
-            "or visit:         https://github.com/junegunn/fzf",
+            col.error(
+                "Error: fzf is not installed.\n"
+                "Install it with:  sudo apt install fzf\n"
+                "or visit:         https://github.com/junegunn/fzf"
+            ),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -68,10 +84,13 @@ def get_package_bugs(
         cached = load_cache(package_name)
         if cached is not None:
             info = cache_info(package_name)
-            print(f"Using cached bugs ({info}).", file=sys.stderr)
+            print(col.info(f"Using cached bugs ({info})."), file=sys.stderr)
             return cached
 
-    print(f"Fetching bugs for {package_name} from Launchpad...", file=sys.stderr)
+    print(
+        col.info(f"Fetching bugs for {package_name} from Launchpad..."),
+        file=sys.stderr,
+    )
     ubuntu = lp.distributions["ubuntu"]
     spkg = ubuntu.getSourcePackage(name=package_name)
     bugs = []
@@ -105,7 +124,7 @@ def fzf_select_bug(bugs: list[BugSummary]) -> BugSummary | None:
     """Present bugs in fzf with a live preview panel and return the selected one."""
     _check_fzf()
     if not bugs:
-        print("No bugs found.", file=sys.stderr)
+        print(col.info("No bugs found."), file=sys.stderr)
         return None
 
     lines = [b.fzf_line() for b in bugs]
@@ -130,9 +149,13 @@ def fzf_select_bug(bugs: list[BugSummary]) -> BugSummary | None:
         return None
 
     selected_line = result.stdout.strip()
-    # Extract bug ID from the start of the line: #<id>
+    # Extract bug ID from the start of the line, stripping ANSI codes first
+    raw = selected_line.split()[0]
+    # Strip ANSI escape sequences then the leading '#'
+    import re
+    raw = re.sub(r"\033\[[0-9;]*m", "", raw).lstrip("#")
     try:
-        bug_id = int(selected_line.split()[0].lstrip("#"))
+        bug_id = int(raw)
     except (IndexError, ValueError):
         return None
 
@@ -142,15 +165,41 @@ def fzf_select_bug(bugs: list[BugSummary]) -> BugSummary | None:
     return None
 
 
+def _print_bug_header(bug_id: int, bug_title: str) -> None:
+    print(f"{col.bug_id(f'Bug #{bug_id}')}: {col.title(bug_title)}")
+
+
+def _print_bug_fields(
+    bug_url: str,
+    status: str,
+    importance: str,
+    assignee_str: str,
+    tags_list: list[str],
+    target: str | None = None,
+) -> None:
+    lbl = col.label
+    print(f"  {lbl('URL:'):<20} {col.url(bug_url)}")
+    if target:
+        print(f"  {lbl('Target:'):<20} {target}")
+    print(f"  {lbl('Status:'):<20} {col.status_color(status)}")
+    print(f"  {lbl('Importance:'):<20} {col.importance_color(importance)}")
+    print(f"  {lbl('Assignee:'):<20} {col.assignee(assignee_str)}")
+    tags_str = (
+        col.tags(", ".join(tags_list)) if tags_list else col.info("none")
+    )
+    print(f"  {lbl('Tags:'):<20} {tags_str}")
+
+
 def print_bug_summary(bug: BugSummary) -> None:
     """Print a compact overview from a cached BugSummary — no API calls."""
-    url = LAUNCHPAD_BUG_URL.format(bug_id=bug.id)
-    print(f"Bug #{bug.id}: {bug.title}")
-    print(f"  URL:        {url}")
-    print(f"  Status:     {bug.status}")
-    print(f"  Importance: {bug.importance}")
-    print(f"  Assignee:   {bug.assignee or 'unassigned'}")
-    print(f"  Tags:       {', '.join(bug.tags) if bug.tags else 'none'}")
+    _print_bug_header(bug.id, bug.title)
+    _print_bug_fields(
+        bug_url=LAUNCHPAD_BUG_URL.format(bug_id=bug.id),
+        status=bug.status,
+        importance=bug.importance,
+        assignee_str=bug.assignee or "unassigned",
+        tags_list=bug.tags,
+    )
 
 
 def get_bug_by_id(lp: "Launchpad", bug_id: int) -> "object":
@@ -189,65 +238,77 @@ def print_bug_status(
             }
             break
 
-    print(f"Bug #{bug_id}: {bug.title}")
-    print(f"  URL:        {LAUNCHPAD_BUG_URL.format(bug_id=bug_id)}")
-    if task_info:
-        print(f"  Target:     {task_info['target']}")
-        print(f"  Status:     {task_info['status']}")
-        print(f"  Importance: {task_info['importance']}")
-        print(f"  Assignee:   {task_info['assignee']}")
-    print(f"  Tags:       {', '.join(bug.tags) if bug.tags else 'none'}")
+    _print_bug_header(bug_id, bug.title)
+    _print_bug_fields(
+        bug_url=LAUNCHPAD_BUG_URL.format(bug_id=bug_id),
+        status=task_info["status"] if task_info else bug.status,
+        importance=task_info["importance"] if task_info else "Undecided",
+        assignee_str=task_info["assignee"] if task_info else "unassigned",
+        tags_list=list(bug.tags),
+        target=task_info["target"] if task_info else None,
+    )
 
     if verbose:
-        print(f"  Heat:       {bug.heat}")
+        lbl = col.label
+        print(f"  {lbl('Heat:'):<20} {bug.heat}")
         description = bug.description or "(no description)"
         term_width = shutil.get_terminal_size().columns
-        # Reserve 4 characters for the leading indent
-        wrapped = textwrap.fill(
-            description,
-            width=max(40, term_width - 4),
-            initial_indent="    ",
-            subsequent_indent="    ",
-        )
-        print(f"  Description:\n{wrapped}")
+        wrap_width = max(40, term_width - 4)
+        indent = "    "
+        print(f"  {lbl('Description:')}")
+        for line in description.splitlines():
+            if line.strip() == "":
+                print()
+            elif line[0].isspace():
+                # Preformatted / indented content — preserve as-is, dimmed
+                print(col.c(indent + line, col.DIM))
+            else:
+                print(textwrap.fill(
+                    line,
+                    width=wrap_width,
+                    initial_indent=indent,
+                    subsequent_indent=indent,
+                ))
 
 
 def open_bug_in_browser(bug_id: int) -> None:
     """Open the given bug in the default web browser."""
-    url = LAUNCHPAD_BUG_URL.format(bug_id=bug_id)
-    print(f"Opening {url}")
-    webbrowser.open(url)
+    bug_url = LAUNCHPAD_BUG_URL.format(bug_id=bug_id)
+    print(col.info("Opening ") + col.url(bug_url))
+    webbrowser.open(bug_url)
 
 
 def report_bug(lp: "Launchpad", package_name: str) -> None:
     """Interactively file a new bug against the given Ubuntu source package."""
-    print(f"Reporting bug against: {package_name} (Ubuntu)")
-    title = input("Title: ").strip()
-    if not title:
-        print("Error: title cannot be empty.", file=sys.stderr)
+    print(col.info(f"Reporting bug against: {package_name} (Ubuntu)"))
+    raw_title = input(col.prompt("Title: ")).strip()
+    if not raw_title:
+        print(col.error("Error: title cannot be empty."), file=sys.stderr)
         sys.exit(1)
 
-    print("Description (press Ctrl+D on an empty line when done):")
+    print(col.prompt("Description") + col.info(" (press Ctrl+D when done):"))
     lines = []
     try:
         while True:
-            line = input()
-            lines.append(line)
+            lines.append(input())
     except EOFError:
         pass
     description = "\n".join(lines).strip()
     if not description:
-        print("Error: description cannot be empty.", file=sys.stderr)
+        print(col.error("Error: description cannot be empty."), file=sys.stderr)
         sys.exit(1)
 
     ubuntu = lp.distributions["ubuntu"]
     spkg = ubuntu.getSourcePackage(name=package_name)
     bug = lp.bugs.createBug(
         target=spkg,
-        title=title,
+        title=raw_title,
         description=description,
     )
-    print(f"Bug #{bug.id} created: {LAUNCHPAD_BUG_URL.format(bug_id=bug.id)}")
+    bug_url = LAUNCHPAD_BUG_URL.format(bug_id=bug.id)
+    print(
+        col.success(f"Bug #{bug.id} created: ") + col.url(bug_url)
+    )
 
 
 def subscribe_to_bug(lp: "Launchpad", bug_id: int) -> None:
@@ -255,4 +316,130 @@ def subscribe_to_bug(lp: "Launchpad", bug_id: int) -> None:
     bug = get_bug_by_id(lp, bug_id)
     me = lp.me
     bug.subscribe(person=me)
-    print(f"Subscribed to bug #{bug_id}: {bug.title}")
+    print(col.success(f"Subscribed to bug #{bug_id}: {bug.title}"))
+
+
+def get_bug_comments(
+    lp: "Launchpad",
+    bug_id: int,
+    force_refresh: bool = False,
+) -> list[Comment]:
+    """Return all comments for the given bug.
+
+    Results are loaded from ~/.cache/lpad/comments/<bug_id>.json when
+    available and fresh. Pass force_refresh=True to bypass the cache.
+    message[0] is the bug description and is skipped.
+    """
+    from lpad.cache import comment_cache_info, load_comment_cache, save_comment_cache
+
+    if not force_refresh:
+        cached = load_comment_cache(bug_id)
+        if cached is not None:
+            info = comment_cache_info(bug_id)
+            print(col.info(f"Using cached comments ({info})."), file=sys.stderr)
+            return cached
+
+    print(col.info(f"Fetching comments for bug #{bug_id} from Launchpad..."), file=sys.stderr)
+    bug = get_bug_by_id(lp, bug_id)
+    comments = []
+    for i, message in enumerate(bug.messages):
+        if i == 0:
+            # message[0] is the bug description, not a comment
+            continue
+        try:
+            author = message.owner.display_name
+        except Exception:
+            author = "(unknown)"
+        comments.append(Comment(
+            index=i,
+            author=author,
+            date=str(message.date_created),
+            body=message.content or "",
+        ))
+    save_comment_cache(bug_id, comments)
+    return comments
+
+
+def _format_comment_date(iso_date: str) -> str:
+    """Return a short human-readable date from an ISO 8601 string."""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso_date)
+        dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return iso_date
+
+
+def _print_body(body: str, term_width: int) -> None:
+    """Print a comment or description body with word-wrap and preformatted-line support."""
+    indent = "  "
+    wrap_width = max(40, term_width - len(indent))
+    for line in body.splitlines():
+        if line.strip() == "":
+            print()
+        elif line[0].isspace():
+            # Preserve intentionally indented content (stack traces, etc.)
+            print(col.c(indent + line, col.DIM))
+        else:
+            print(textwrap.fill(
+                line,
+                width=wrap_width,
+                initial_indent=indent,
+                subsequent_indent=indent,
+            ))
+
+
+def print_comments(
+    comments: list[Comment],
+    first: int | None = None,
+    last: int | None = None,
+    reverse: bool = False,
+) -> None:
+    """Print bug comments with optional filtering and ordering.
+
+    Args:
+        comments: Full list of comments (oldest first).
+        first:    If set, show only the first N comments.
+        last:     If set, show only the last N comments.
+        reverse:  If True, display newest first.
+    """
+    if not comments:
+        print(col.info("No comments on this bug."))
+        return
+
+    # Apply first/last slicing before reversing
+    if first is not None:
+        subset = comments[:first]
+    elif last is not None:
+        subset = comments[-last:]
+    else:
+        subset = list(comments)
+
+    if reverse:
+        subset = list(reversed(subset))
+
+    term_width = shutil.get_terminal_size().columns
+    sep_char = "─"
+
+    for i, comment in enumerate(subset):
+        date_str = _format_comment_date(comment.date)
+        # Build the header: ── Comment #N by Author  ·  date ──────
+        header_text = (
+            f" Comment {col.c(f'#{comment.index}', col.BOLD)} "
+            f"by {col.assignee(comment.author)}  "
+            f"{col.c('·', col.DIM)}  {col.c(date_str, col.DIM)} "
+        )
+        # Strip ANSI codes to measure printable width for the trailing dashes
+        import re
+        plain_header = re.sub(r"\033\[[0-9;]*m", "", header_text)
+        trail_len = max(0, term_width - len(plain_header) - 2)
+        separator = (
+            col.c(sep_char * 2, col.DIM)
+            + header_text
+            + col.c(sep_char * trail_len, col.DIM)
+        )
+        print(separator)
+        _print_body(comment.body, term_width)
+        if i < len(subset) - 1:
+            print()
