@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 
-from lpad.bugs import BugSummary, Comment
+from lpad.bugs import BugSummary, BugWatch, Comment
 
 DEFAULT_TTL = 60 * 60 * 24  # 24 hours
 CACHE_DIR = Path.home() / ".cache" / "lpad"
@@ -64,7 +64,18 @@ def load_cache(package: str) -> list[BugSummary] | None:
     if time.time() - cached_at > _get_ttl():
         return None
 
-    return [BugSummary(**b) for b in data.get("bugs", [])]
+    return [
+        BugSummary(
+            id=b["id"],
+            title=b["title"],
+            status=b["status"],
+            importance=b["importance"],
+            assignee=b.get("assignee"),
+            tags=b.get("tags", []),
+            watches=[BugWatch(**w) for w in b.get("watches", [])],
+        )
+        for b in data.get("bugs", [])
+    ]
 
 
 def save_cache(package: str, bugs: list[BugSummary]) -> None:
@@ -81,6 +92,17 @@ def save_cache(package: str, bugs: list[BugSummary]) -> None:
                 "importance": b.importance,
                 "assignee": b.assignee,
                 "tags": b.tags,
+                "watches": [
+                    {
+                        "url": w.url,
+                        "title": w.title,
+                        "remote_bug": w.remote_bug,
+                        "remote_status": w.remote_status,
+                        "remote_importance": w.remote_importance,
+                        "date_last_changed": w.date_last_changed,
+                    }
+                    for w in b.watches
+                ],
             }
             for b in bugs
         ],

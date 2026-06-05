@@ -25,6 +25,16 @@ class Comment:
 
 
 @dataclass
+class BugWatch:
+    url: str
+    title: str             # e.g. "Debian Bug tracker #1234567"
+    remote_bug: str        # bug number/ID in the external tracker
+    remote_status: str     # raw status string from the remote tracker
+    remote_importance: str
+    date_last_changed: str | None   # ISO 8601, or None if unavailable
+
+
+@dataclass
 class BugSummary:
     id: int
     title: str
@@ -32,6 +42,7 @@ class BugSummary:
     importance: str
     assignee: str | None
     tags: list[str] = field(default_factory=list)
+    watches: list[BugWatch] = field(default_factory=list)
 
     def fzf_line(self) -> str:
         assignee_str = col.c(
@@ -106,6 +117,10 @@ def get_package_bugs(
             tags = list(bug.tags)
         except Exception:
             tags = []
+        try:
+            watches = _fetch_watches(bug)
+        except Exception:
+            watches = []
         bugs.append(
             BugSummary(
                 id=bug.id,
@@ -114,10 +129,37 @@ def get_package_bugs(
                 importance=task.importance,
                 assignee=assignee,
                 tags=tags,
+                watches=watches,
             )
         )
     save_cache(package_name, bugs)
     return bugs
+
+
+def _fetch_watches(bug) -> list["BugWatch"]:
+    """Return a list of BugWatch for a launchpadlib bug object.
+
+    Each attribute access on a watch may raise; individual failures are
+    silently ignored so the parent bug is never dropped.
+    """
+    watches = []
+    for watch in bug.bug_watches:
+        try:
+            date_lc = str(watch.date_last_changed) if watch.date_last_changed else None
+        except Exception:
+            date_lc = None
+        try:
+            watches.append(BugWatch(
+                url=watch.url or "",
+                title=watch.title or "",
+                remote_bug=str(watch.remote_bug) if watch.remote_bug else "",
+                remote_status=watch.remote_status or "",
+                remote_importance=watch.remote_importance or "",
+                date_last_changed=date_lc,
+            ))
+        except Exception:
+            continue
+    return watches
 
 
 def fzf_select_bug(bugs: list[BugSummary]) -> BugSummary | None:
@@ -190,6 +232,32 @@ def _print_bug_fields(
     print(f"  {lbl('Tags:'):<20} {tags_str}")
 
 
+def _print_bug_watches(watches: list[BugWatch]) -> None:
+    """Print the remote bug watches section."""
+    lbl = col.label
+    if not watches:
+        print(f"  {lbl('Remote Watches:'):<20} {col.info('none')}")
+        return
+
+    print(f"  {lbl('Remote Watches:'):<20} {col.info(f'({len(watches)})')}")
+    for w in watches:
+        print(f"    {col.title(w.title)}")
+        print(f"      {lbl('URL:'):<18} {col.url(w.url)}")
+        if w.remote_status:
+            print(f"      {lbl('Status:'):<18} {w.remote_status}")
+        if w.remote_importance:
+            print(f"      {lbl('Importance:'):<18} {w.remote_importance}")
+        if w.date_last_changed:
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(w.date_last_changed)
+                dt = dt.astimezone(timezone.utc)
+                date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                date_str = w.date_last_changed
+            print(f"      {lbl('Last changed:'):<18} {col.info(date_str)}")
+
+
 def print_bug_summary(bug: BugSummary) -> None:
     """Print a compact overview from a cached BugSummary — no API calls."""
     _print_bug_header(bug.id, bug.title)
@@ -200,6 +268,7 @@ def print_bug_summary(bug: BugSummary) -> None:
         assignee_str=bug.assignee or "unassigned",
         tags_list=bug.tags,
     )
+    _print_bug_watches(bug.watches)
 
 
 def get_bug_by_id(lp: "Launchpad", bug_id: int) -> "object":
@@ -247,6 +316,11 @@ def print_bug_status(
         tags_list=list(bug.tags),
         target=task_info["target"] if task_info else None,
     )
+    try:
+        watches = _fetch_watches(bug)
+    except Exception:
+        watches = []
+    _print_bug_watches(watches)
 
     if verbose:
         lbl = col.label
