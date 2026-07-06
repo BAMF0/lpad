@@ -39,7 +39,7 @@ def cmd_branch(args: argparse.Namespace) -> None:
     from lpad.auth import get_launchpad
     from lpad.bugs import get_package_bugs, fzf_select_bug
     from lpad.branch import create_branch
-    from lpad.repo import detect_source_package
+    from lpad.repo import detect_source_package, parse_changelog_series
 
     package = detect_source_package()
     lp = get_launchpad()
@@ -48,7 +48,14 @@ def cmd_branch(args: argparse.Namespace) -> None:
     if selected is None:
         print(col.info("No bug selected."))
         sys.exit(0)
-    create_branch(selected.id)
+
+    series: str | None = args.series
+    if series is None:
+        series = parse_changelog_series()
+        if series:
+            print(col.info(f"Detected series '{series}' from debian/changelog."))
+
+    create_branch(selected.id, series=series)
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -74,7 +81,7 @@ def cmd_open(args: argparse.Namespace) -> None:
     if bug_id is None:
         print(
             col.error(
-                f"Error: current branch '{branch}' does not look like an lp<N>-* branch."
+                f"Error: current branch '{branch}' does not look like an lp<N>-* or <series>-lp<N>-* branch."
             ),
             file=sys.stderr,
         )
@@ -101,7 +108,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     if bug_id is None:
         print(
             col.error(
-                f"Error: current branch '{branch}' does not look like an lp<N>-* branch."
+                f"Error: current branch '{branch}' does not look like an lp<N>-* or <series>-lp<N>-* branch."
             ),
             file=sys.stderr,
         )
@@ -150,7 +157,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
         ))
     else:
         print(col.info(
-            "Skipping comment cache refresh (not on an lp<N>-* branch)."
+            "Skipping comment cache refresh (not on an lp<N>-* or <series>-lp<N>-* branch)."
         ))
 
 
@@ -171,7 +178,7 @@ def cmd_comments(args: argparse.Namespace) -> None:
     if bug_id is None:
         print(
             col.error(
-                "Error: no bug ID given and current branch is not an lp<N>-* branch.\n"
+                "Error: no bug ID given and current branch is not an lp<N>-* or <series>-lp<N>-* branch.\n"
                 "Usage: lpad comments [bug_id]"
             ),
             file=sys.stderr,
@@ -262,9 +269,16 @@ def main() -> None:
         "list",
         help="Browse all bugs for the current source package via fzf; shows status on selection",
     )
-    subparsers.add_parser(
+    branch_parser = subparsers.add_parser(
         "branch",
-        help="Pick a bug with fzf and create a git branch lp<N>-<description>",
+        help="Pick a bug with fzf and create a git branch lp<N>-<description> or <series>-lp<N>-<description>",
+    )
+    branch_parser.add_argument(
+        "--series", "-s",
+        type=str,
+        default=None,
+        help="Target Ubuntu series prefix for the branch (e.g. noble). "
+             "If omitted, lpad auto-detects from debian/changelog.",
     )
     subparsers.add_parser(
         "report",
@@ -288,9 +302,10 @@ def main() -> None:
         "subscribe",
         help="Subscribe yourself to a bug picked via fzf",
     )
+
     subparsers.add_parser(
         "sync",
-        help="Refresh the bug cache for the current source package (and comment cache if on an lp<N>-* branch)",
+        help="Refresh the bug cache for the current source package (and comment cache if on an lp<N>-* or <series>-lp<N>-* branch)",
     )
 
     comments_parser = subparsers.add_parser(

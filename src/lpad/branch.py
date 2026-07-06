@@ -20,8 +20,11 @@ def _slugify(text: str) -> str:
     return text.strip("-")
 
 
-def create_branch(bug_id: int) -> None:
+def create_branch(bug_id: int, series: str | None = None) -> None:
     """Prompt for a description and create a git branch lp<bug_id>-<desc>.
+
+    If *series* is provided, the branch is named <series>-lp<bug_id>-<desc>
+    instead (e.g. ``noble-lp123456-fix-crash``).
 
     Exits with an error if not in a git repository or if git checkout fails.
     """
@@ -40,7 +43,10 @@ def create_branch(bug_id: int) -> None:
         )
         sys.exit(1)
 
-    branch_name = f"lp{bug_id}-{slug}"
+    if series:
+        branch_name = f"{series}-lp{bug_id}-{slug}"
+    else:
+        branch_name = f"lp{bug_id}-{slug}"
 
     try:
         subprocess.run(
