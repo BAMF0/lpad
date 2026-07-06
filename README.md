@@ -7,24 +7,28 @@ against Ubuntu source package bugs without leaving the terminal.
 
 | Command | Description |
 |---|---|
-| `lpad list` | Browse all bugs for the current source package via fzf with a live preview panel |
-| `lpad branch` | Pick a bug with fzf and create a `lp<N>-<description>` git branch |
-| `lpad report` | File a new bug against the current source package |
+| `lpad list` | Browse bugs for the current source package via fzf with a live preview |
+| `lpad branch` | Pick a bug and create a git branch (`lp<N>-<desc>`, `--sru`, `--merge`) |
+| `lpad report` | File a new bug using `$EDITOR` with optional templates and draft saving |
 | `lpad open` | Open the current branch's bug in the browser |
 | `lpad status` | Print a live status summary for the current branch's bug |
-| `lpad subscribe` | Subscribe yourself to a bug picked via fzf |
+| `lpad subscribe` | Subscribe yourself to a bug |
 | `lpad sync` | Refresh the local bug cache |
+| `lpad comments` | Show comments for a bug (current branch's or by ID) |
+| `lpad cache` | Inspect and manage local caches (list, info, clear, clear-comments) |
+| `lpad template` | Manage bug report templates (list, show, edit, refresh, remove) |
+| `lpad draft` | Manage saved bug report drafts (list, show, remove, prune) |
+| `lpad completion` | Print a shell completion script (bash, zsh, tcsh) |
 
 ## Requirements
 
 - Python 3.12+
 - [`fzf`](https://github.com/junegunn/fzf) (`sudo apt install fzf`)
-- [`pipx`](https://pipx.pypa.io) for installation
 
 ## Installation
 
 ```bash
-pipx install git+https://github.com/BAMF0/lpad.git
+pipx install git+https://github.com/BAMF0/lpad
 ```
 
 Or from a local clone:
@@ -54,15 +58,29 @@ lpad branch
 # → enter a short description, e.g. "fix tls handshake"
 # → creates branch: lp2045432-fix-tls-handshake
 
-# File a new bug
-lpad report
+# Branch directly by bug ID (skips fzf)
+lpad branch 2045432
 
-# While on an lp<N>-* branch:
+# SRU branch: <series>-sru-lp<N>-<desc>
+lpad branch --sru
+
+# Merge branch: merge-lp<N>-<series> (requires --series)
+lpad branch --merge --series noble
+
+# File a new bug with the SRU template
+lpad report --template sru
+
+# File a bug with a custom template file
+lpad report --template ~/my-template.txt
+
+# While on a bug branch:
 lpad status    # print live bug summary in the terminal
 lpad open      # open the bug in the browser
+lpad comments  # show comments
 
-# Subscribe to a bug
-lpad subscribe
+# Shell completion
+lpad completion bash > ~/.local/share/bash-completion/completions/lpad
+lpad completion zsh > "${fpath[1]}/_lpad"
 ```
 
 ## Source package detection
@@ -81,3 +99,9 @@ runs. Run `lpad sync` to force a refresh. Override the TTL by setting
 ```bash
 LPAD_CACHE_TTL=3600 lpad list   # treat cache as stale after 1 hour
 ```
+
+Use `lpad cache list` to see cached packages, and `lpad cache clear` to clear.
+
+## Licence
+
+GPL-3.0-or-later. See [`LICENSE`](LICENSE).
