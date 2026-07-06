@@ -43,13 +43,25 @@ def _age_string(cached_at: float) -> str:
         return f"{age_seconds // 3600}h ago"
 
 
+def _normalize_status_filter(status_filter: list[str] | None) -> list[str] | None:
+    """Normalise a status filter for comparison/storage (sorted, or None for all)."""
+    if not status_filter:
+        return None
+    return sorted(status_filter)
+
+
 # --- Bug list cache ---
 
-def load_cache(package: str) -> list[BugSummary] | None:
+
+def load_cache(
+    package: str,
+    status_filter: list[str] | None = None,
+) -> list[BugSummary] | None:
     """Load cached bugs for a package.
 
-    Returns a list of BugSummary if the cache exists and is fresh,
-    or None if the cache is missing or stale.
+    Returns a list of BugSummary if the cache exists, is fresh, and was
+    fetched with the same status filter. Returns None otherwise (cache
+    miss), prompting the caller to refetch.
     """
     path = _cache_path(package)
     if not path.exists():
@@ -64,26 +76,45 @@ def load_cache(package: str) -> list[BugSummary] | None:
     if time.time() - cached_at > _get_ttl():
         return None
 
+    cached_filter = data.get("status_filter")
+    if cached_filter != _normalize_status_filter(status_filter):
+        return None
+
     return [
         BugSummary(
-            id=b["id"],
-            title=b["title"],
-            status=b["status"],
-            importance=b["importance"],
+            id=b.get("id", 0),
+            title=b.get("title", "(unknown)"),
+            status=b.get("status", "(unknown)"),
+            importance=b.get("importance", "Undecided"),
             assignee=b.get("assignee"),
             tags=b.get("tags", []),
-            watches=[BugWatch(**w) for w in b.get("watches", [])],
+            watches=[
+                BugWatch(
+                    url=w.get("url", ""),
+                    title=w.get("title", ""),
+                    remote_bug=w.get("remote_bug", ""),
+                    remote_status=w.get("remote_status", ""),
+                    remote_importance=w.get("remote_importance", ""),
+                    date_last_changed=w.get("date_last_changed"),
+                )
+                for w in b.get("watches", [])
+            ],
         )
         for b in data.get("bugs", [])
     ]
 
 
-def save_cache(package: str, bugs: list[BugSummary]) -> None:
+def save_cache(
+    package: str,
+    bugs: list[BugSummary],
+    status_filter: list[str] | None = None,
+) -> None:
     """Save a list of BugSummary to the cache for the given package."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _cache_path(package)
     data = {
         "cached_at": time.time(),
+        "status_filter": _normalize_status_filter(status_filter),
         "bugs": [
             {
                 "id": b.id,
@@ -131,6 +162,7 @@ def cache_info(package: str) -> str | None:
 
 
 # --- Comment cache ---
+
 
 def load_comment_cache(bug_id: int) -> list[Comment] | None:
     """Load cached comments for a bug.

@@ -26,10 +26,17 @@ UNDERLINE = "\033[4m"
 
 
 def _colors_enabled() -> bool:
-    """Return True if ANSI colour output should be used."""
+    """Return True if ANSI colour output should be used on stdout."""
     if os.environ.get("NO_COLOR"):
         return False
     return sys.stdout.isatty()
+
+
+def _error_colors_enabled() -> bool:
+    """Return True if ANSI colour should be used for stderr messages."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stderr.isatty()
 
 
 def c(text: str, *codes: str) -> str:
@@ -41,12 +48,15 @@ def c(text: str, *codes: str) -> str:
 
 # --- Convenience wrappers ---
 
+
 def success(text: str) -> str:
     return c(text, GREEN)
 
 
 def error(text: str) -> str:
-    return c(text, BOLD_RED)
+    if not _error_colors_enabled():
+        return text
+    return "".join((BOLD_RED, text, RESET))
 
 
 def info(text: str) -> str:

@@ -2,9 +2,9 @@
 
 `lpad` is a focused CLI tool for Ubuntu package maintainers working with
 Launchpad bugs. It wraps the official `launchpadlib` REST API client and
-surfaces the most common workflows (browse, status, branch, comment, sync)
-directly from the terminal, with an `fzf` picker and a local JSON cache to
-avoid redundant API calls.
+surfaces the most common workflows (browse, status, branch, comment, sync,
+report) directly from the terminal, with an `fzf` picker, an `$EDITOR`-based
+report/draft flow, and a local JSON cache to avoid redundant API calls.
 
 ---
 
@@ -18,9 +18,14 @@ avoid redundant API calls.
 | Launchpad API | `launchpadlib` 2.1.0, API version `devel` |
 | Auth credentials | `~/.lpadlib/lpad-credentials` (plain file, OAuth) |
 | Cache root | `~/.cache/lpad/` |
+| Templates dir | `~/.config/lpad/templates/` (user overrides; built-ins ship in `templates.py`) |
+| Drafts dir | `~/.local/share/lpad/drafts/<package>/` (WIP bug reports) |
 | Cache TTL | 24 h default; override with `LPAD_CACHE_TTL` env var (seconds) |
-| Test suite | None |
+| Test suite | `pytest` (144 tests); run with `uv run pytest` |
+| Lint | `uv run ruff check` + `uv run ruff format --check` |
+| Type check | `uv run mypy src` |
 | External binary | `fzf` (must be on PATH for `list`, `branch`, `subscribe`) |
+| Licence | GPL-3.0-or-later |
 
 ---
 
@@ -28,13 +33,17 @@ avoid redundant API calls.
 
 ```
 src/lpad/
-  auth.py    OAuth login → returns authenticated Launchpad instance
-  bugs.py    All data models, API fetch logic, display/print functions
-  cache.py   Read / write / invalidate the JSON caches; imports from bugs.py
-  color.py   ANSI escape helpers; auto-disabled on non-TTY stdout or NO_COLOR
-  main.py    argparse setup; one cmd_* function per subcommand
-  repo.py    git remote → source package detection; branch name parsing
-  branch.py  git branch creation (lp<N>-<slug>)
+  auth.py       OAuth login → returns authenticated Launchpad instance
+  bugs.py       Data models, API fetch logic, display/print functions
+  cache.py      Read / write / invalidate the JSON caches; imports from bugs.py
+  color.py      ANSI escape helpers; auto-disabled on non-TTY stdout/stderr or NO_COLOR
+  repo.py       git remote → source package detection; branch name parsing; changelog series
+  branch.py     git branch creation (lp<N>-<slug>, SRU, merge variants); dirty-tree check
+  editor.py     $EDITOR-on-temp-file flow for editing templated/draft content
+  templates.py  Built-in + user override bug report templates; web refresh for SRU
+  drafts.py     Work-in-progress bug report drafts (short-hash IDs, prune, resume)
+  main.py       argparse setup; one cmd_* function per subcommand; KeyboardInterrupt handler
+  tests/        pytest suite (144 tests); pure-logic modules have high coverage
 ```
 
 ---
@@ -43,15 +52,26 @@ src/lpad/
 
 | Subcommand | Handler | Key functions called |
 |---|---|---|
-| `list` | `cmd_list` | `load_cache` → `get_package_bugs` → `fzf_select_bug` → `print_bug_summary` |
-| `branch` | `cmd_branch` | `get_package_bugs` → `fzf_select_bug` → `create_branch` |
-| `report` | `cmd_report` | `report_bug` (interactive, calls `lp.bugs.createBug`) |
+| `list` | `cmd_list` | `load_cache` → `get_package_bugs` (status-filtered) → `fzf_select_bug` → `print_bug_summary` |
+| `branch` | `cmd_branch` | (positional `bug_id` or `fzf_select_bug`) → `create_branch` (kind: normal/sru/merge) |
+| `report` | `cmd_report` | `resolve_template` → `open_editor` → optional `create_draft`/`update_draft` → `lp.bugs.createBug` → optional draft removal |
 | `open` | `cmd_open` | `parse_bug_number_from_branch` → `open_bug_in_browser` |
 | `status` | `cmd_status` | `get_bug_by_id` → `print_bug_status` (live API, includes watches) |
-| `subscribe` | `cmd_subscribe` | `get_package_bugs` → `fzf_select_bug` → `subscribe_to_bug` |
+| `subscribe` | `cmd_subscribe` | (positional `bug_id` or `fzf_select_bug`) → `subscribe_to_bug` |
 | `sync` | `cmd_sync` | `invalidate_cache` → `get_package_bugs(force_refresh=True)` → optionally refreshes comment cache for current branch's bug |
 | `comments` | `cmd_comments` | `load_comment_cache` → `get_bug_comments` → `print_comments` |
+| `cache` | `cmd_cache` | `cache list`/`info`/`clear`/`clear-comments` (subactions) |
+| `template` | `cmd_template` | `template list`/`show`/`edit`/`refresh`/`remove` (subactions) |
+| `draft` | `cmd_draft` | `draft list`/`show`/`remove`/`prune` (subactions) |
+| `completion` | `cmd_completion` | `shtab.complete(parser, shell=...)` for bash/zsh/tcsh |
 | `_preview` | `cmd_preview` | Hidden; called by fzf `--preview`. Intercepted **before** argparse. Reads cache, calls `print_bug_summary`. |
+
+### Status filter
+
+`list`, `branch`, and `subscribe` accept `--status=<csv>` and `--all` flags
+(mutually exclusive). Default: open statuses only (see `OPEN_STATUSES` in
+`bugs.py`). The chosen filter is recorded in the cache file under
+`status_filter`; switching filters triggers a refetch.
 
 ---
 
@@ -138,6 +158,62 @@ does not include watches — those appear only in the detail / status views.
 **Backward-compat rule**: always use `.get("field", default)` when reading
 individual keys from a cached dict. Never splat `**b` directly into a
 dataclass constructor — new fields won't exist in old cache files.
+
+The bug list cache also stores `status_filter` (a sorted list or `null`).
+`load_cache()` compares the requested filter against the cached one and
+returns `None` (cache miss) on mismatch, forcing a refetch.
+
+---
+
+## Templates (`templates.py`)
+
+Built-in bug report templates (`ubuntu`, `sru`, `regression`) ship as
+constants in `BUILTIN_TEMPLATES`. The SRU template mirrors the canonical
+layout from ubuntu.com with `[ Impact ]`, `[ Test Plan ]`,
+`[ Where problems could occur ]`, `[ Other Info ]` sections.
+
+User overrides live in `~/.config/lpad/templates/<name>.txt` and take
+precedence over built-ins. `lpad template refresh sru` fetches the latest
+SRU template from
+`https://ubuntu.com/project/docs/SRU/reference/bug-template/` and writes a
+user override; built-ins are always available offline as a snapshot.
+
+`resolve_template(arg)` is the entry point used by `cmd_report`: it
+accepts a built-in name, a user override name, or a file path (detected
+by `/` or a `.txt`/`.md` suffix), and returns the seed content.
+
+---
+
+## Drafts (`drafts.py`)
+
+WIP bug reports are stored in `~/.local/share/lpad/drafts/<package>/<id>.md`
+where `<id>` is the first 4 chars of a SHA1 hash of
+`f"{created_at}:{package}:{title}"` — short, unique within a package, and
+easy to type for `lpad report --resume=<id>`.
+
+Each draft file begins with `Title: <title>\n\n` followed by the
+description body. `update_draft()` writes back edited content in place.
+
+`prune_drafts(older_than_days, dry_run)` is used by `lpad draft prune` to
+clean up stale drafts.
+
+---
+
+## Editor flow (`editor.py`)
+
+`open_editor(seed_content, suffix)` is the single entry point used by
+`cmd_report` and `cmd_template edit`. It:
+
+1. Resolves the editor: `$VISUAL` → `$EDITOR` → `sensible-editor` →
+   `nano` → `vi` (first found on PATH via `shutil.which`).
+2. Writes the seed to a `mkstemp` temp file under
+   `~/.local/share/lpad/tmp/`.
+3. Invokes the editor via `subprocess.call([editor, tmpfile])`.
+4. Reads the content back and returns it (or `None` if empty).
+5. Removes the temp file in a `finally` block.
+
+The caller decides what to do with `None` (abort) vs non-empty content
+(submit / save draft / save template).
 
 ---
 
@@ -231,10 +307,21 @@ logic, same `_age_string` helper).
   URL by matching `+source/<name>` (see `_SOURCE_PKG_RE` in `repo.py`).
   Falls back to interactive prompt if not found.
 
-- **Branch naming**: `lp<bugid>-<slug>` or `<series>-lp<bugid>-<slug>` when a
-  series is provided (either via `--series` or auto-detected from
-  `debian/changelog`). The slug is produced by `branch.py:_slugify`
-  (lowercase, hyphens, alphanumeric only).
+- **Branch naming**: depends on the branch kind, controlled by the mutually
+  exclusive `--sru` / `--merge` flags:
+
+  | Kind | Flags | Format |
+  |---|---|---|
+  | normal | (none) | `lp<bugid>-<slug>` or `<series>-lp<bugid>-<slug>` |
+  | sru | `--sru` | `<series>-sru-lp<bugid>-<slug>` |
+  | merge | `--merge` | `merge-lp<bugid>-<series>` (no slug; `--series` required) |
+
+  For normal and SRU branches, `series` comes from `--series` or is
+  auto-detected from `debian/changelog`. For merge branches, `--series` is
+  mandatory (the target may differ from the changelog's current series). The
+  slug is produced by `branch.py:_slugify` (lowercase, hyphens, alphanumeric
+  only). `parse_bug_number_from_branch` in `repo.py` recognises all three
+  forms so `open`/`status`/`sync` keep working.
 
 - **Per-bug API cost during sync**: `get_package_bugs()` makes roughly two
   HTTP calls per bug (`task.bug` + `bug.bug_watches`). For packages with
