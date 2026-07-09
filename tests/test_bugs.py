@@ -7,6 +7,7 @@ from lpad.bugs import (
     _format_comment_date,
     _safe_tags,
     _strip_ansi,
+    _truncate_ansi,
 )
 
 
@@ -24,6 +25,29 @@ class TestStripAnsi:
         assert _strip_ansi("") == ""
 
 
+class TestTruncateAnsi:
+    def test_no_truncation_needed(self):
+        assert _truncate_ansi("hello", 10) == "hello"
+
+    def test_exact_fit(self):
+        assert _truncate_ansi("hello", 5) == "hello"
+
+    def test_truncates_with_ellipsis(self):
+        assert _truncate_ansi("hello world", 8) == "hello w…"
+
+    def test_preserves_ansi_escapes(self):
+        result = _truncate_ansi("\033[1mhello world\033[0m", 8)
+        assert result.endswith("…")
+        assert "\033[1m" in result
+        assert _strip_ansi(result) == "hello w…"
+
+    def test_zero_width(self):
+        assert _truncate_ansi("hello", 0) == ""
+
+    def test_single_char(self):
+        assert _truncate_ansi("hello", 1) == "…"
+
+
 class TestFormatCommentDate:
     def test_valid_iso(self):
         result = _format_comment_date("2024-01-15T12:00:00+00:00")
@@ -39,15 +63,18 @@ class TestFormatCommentDate:
 
 
 class TestBugSummaryFzfLine:
-    def test_contains_id(self, fake_bug):
+    def test_contains_id(self, fake_bug, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
         line = fake_bug.fzf_line()
         assert "123456" in line
 
-    def test_contains_title(self, fake_bug):
+    def test_contains_title(self, fake_bug, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
         line = fake_bug.fzf_line()
         assert "Test bug title" in line
 
-    def test_unassigned(self):
+    def test_unassigned(self, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
         bug = BugSummary(
             id=1,
             title="T",
@@ -57,6 +84,38 @@ class TestBugSummaryFzfLine:
         )
         line = bug.fzf_line()
         assert "unassigned" in line
+
+    def test_narrow_drops_assignee(self, monkeypatch):
+        """On a narrow terminal the assignee is dropped from the line."""
+        monkeypatch.setenv("COLUMNS", "80")
+        bug = BugSummary(
+            id=1,
+            title="Some title here",
+            status="New",
+            importance="High",
+            assignee="Alice",
+        )
+        line = bug.fzf_line()
+        assert "Alice" not in line
+        assert "unassigned" not in line
+
+    def test_narrow_truncates_title(self, monkeypatch):
+        """A long title is truncated with an ellipsis on a narrow terminal."""
+        monkeypatch.setenv("COLUMNS", "80")
+        long_title = "A very long bug title that will not fit in a narrow pane"
+        bug = BugSummary(
+            id=1,
+            title=long_title,
+            status="New",
+            importance="High",
+            assignee="Alice",
+        )
+        from lpad.bugs import _strip_ansi
+
+        line = bug.fzf_line()
+        assert "…" in line
+        assert long_title not in _strip_ansi(line)
+        assert "Alice" not in line
 
 
 class TestFetchWatches:

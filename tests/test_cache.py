@@ -86,6 +86,22 @@ class TestBugCacheRoundTrip:
         assert load_cache("testpkg", status_filter=None) is not None
         assert load_cache("testpkg", status_filter=["New"]) is None
 
+    def test_ignore_status_filter(self, sample_bugs):
+        """ignore_status_filter=True bypasses the filter comparison.
+
+        Used by the fzf preview (cmd_preview) which looks up bugs by ID
+        regardless of which filter populated the cache.
+        """
+        save_cache("testpkg", sample_bugs, status_filter=["New"])
+        # Mismatched filter would normally miss...
+        assert load_cache("testpkg", status_filter=["In Progress"]) is None
+        # ...but is ignored when ignore_status_filter=True.
+        loaded = load_cache("testpkg", status_filter=["In Progress"], ignore_status_filter=True)
+        assert loaded is not None
+        assert len(loaded) == 2
+        # Also works with the default (None) filter argument.
+        assert load_cache("testpkg", ignore_status_filter=True) is not None
+
 
 class TestCacheBackwardCompat:
     def test_missing_keys_use_defaults(self, tmp_path):

@@ -399,7 +399,7 @@ def cmd_preview(args: argparse.Namespace) -> None:
 
     if CACHE_DIR.exists():
         for cache_file in CACHE_DIR.glob("*.json"):
-            bugs = load_cache(cache_file.stem)
+            bugs = load_cache(cache_file.stem, ignore_status_filter=True)
             if bugs:
                 for bug in bugs:
                     if bug.id == bug_id:

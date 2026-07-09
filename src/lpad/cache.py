@@ -56,12 +56,17 @@ def _normalize_status_filter(status_filter: list[str] | None) -> list[str] | Non
 def load_cache(
     package: str,
     status_filter: list[str] | None = None,
+    ignore_status_filter: bool = False,
 ) -> list[BugSummary] | None:
     """Load cached bugs for a package.
 
     Returns a list of BugSummary if the cache exists, is fresh, and was
     fetched with the same status filter. Returns None otherwise (cache
     miss), prompting the caller to refetch.
+
+    When *ignore_status_filter* is True the status-filter comparison is
+    skipped — useful for lookups by bug ID (e.g. the fzf preview) where
+    the filter that populated the cache is irrelevant.
     """
     path = _cache_path(package)
     if not path.exists():
@@ -76,9 +81,10 @@ def load_cache(
     if time.time() - cached_at > _get_ttl():
         return None
 
-    cached_filter = data.get("status_filter")
-    if cached_filter != _normalize_status_filter(status_filter):
-        return None
+    if not ignore_status_filter:
+        cached_filter = data.get("status_filter")
+        if cached_filter != _normalize_status_filter(status_filter):
+            return None
 
     return [
         BugSummary(

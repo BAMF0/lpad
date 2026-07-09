@@ -37,6 +37,37 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def _truncate_ansi(text: str, max_width: int) -> str:
+    """Truncate *text* (which may contain ANSI codes) to *max_width* visible chars.
+
+    Appends an ellipsis when truncation occurs. ANSI escapes are not
+    counted toward the visible width.
+    """
+    if max_width <= 0:
+        return ""
+    plain = _strip_ansi(text)
+    if len(plain) <= max_width:
+        return text
+    # Walk the original string, counting only non-escape characters,
+    # until we have consumed (max_width - 1) visible chars; then append "…".
+    visible = 0
+    out: list[str] = []
+    i = 0
+    ellipsis = "…"
+    target = max_width - 1
+    while i < len(text) and visible < target:
+        match = _ANSI_RE.match(text, i)
+        if match:
+            out.append(match.group(0))
+            i = match.end()
+            continue
+        out.append(text[i])
+        visible += 1
+        i += 1
+    out.append(ellipsis)
+    return "".join(out)
+
+
 @dataclass
 class Comment:
     index: int  # 1-based; message[0] (the description) is skipped
@@ -66,13 +97,30 @@ class BugSummary:
     watches: list[BugWatch] = field(default_factory=list)
 
     def fzf_line(self) -> str:
-        assignee_str = col.c(f"({self.assignee or 'unassigned'})", col.DIM)
-        return (
-            f"{col.bug_id(f'#{self.id}'):<20} "
-            f"[{col.status_color(f'{self.status}'):<24}] "
-            f"{col.importance_color(f'{self.importance}'):<20} "
-            f"{self.title}  {assignee_str}"
-        )
+        # Tightened fixed columns so the title gets room even on
+        # narrow terminals. On very narrow widths the assignee is
+        # dropped and the title is truncated to fit.
+        id_part = col.bug_id(f"#{self.id}")
+        status_part = col.status_color(f"{self.status}")
+        importance_part = col.importance_color(f"{self.importance}")
+        prefix = f"{id_part:<10} [{status_part:<16}] {importance_part:<10} "
+
+        prefix_plain = _strip_ansi(prefix)
+        assignee_str = self.assignee or "unassigned"
+        assignee_col = col.c(f"({assignee_str})", col.DIM)
+        assignee_plain = _strip_ansi(assignee_col)
+
+        # fzf gives the list ~60% of the terminal (preview takes 40%).
+        term_width = shutil.get_terminal_size().columns
+        list_width = max(40, int(term_width * 0.6))
+        available = list_width - len(prefix_plain)
+
+        if available - len(assignee_plain) - 1 < 20:
+            # Narrow: drop the assignee, give the title all the room.
+            title = _truncate_ansi(self.title, max(8, available))
+            return f"{prefix}{title}"
+        title = _truncate_ansi(self.title, max(8, available - len(assignee_plain) - 2))
+        return f"{prefix}{title}  {assignee_col}"
 
 
 def _check_fzf() -> None:
@@ -205,7 +253,7 @@ def fzf_select_bug(bugs: list[BugSummary]) -> BugSummary | None:
             "--height=80%",
             "--reverse",
             "--preview=lpad _preview {1}",
-            "--preview-window=right:50%:wrap",
+            "--preview-window=right:40%:wrap",
         ],
         input=input_text,
         capture_output=True,
