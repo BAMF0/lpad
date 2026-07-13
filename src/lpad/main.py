@@ -24,6 +24,37 @@ def _resolve_status_filter(args: argparse.Namespace) -> list[str] | None:
     return OPEN_STATUSES
 
 
+def _add_package_arg(parser: argparse.ArgumentParser) -> None:
+    """Register -p/--package on *parser*.
+
+    Allows operating on a specific source package without being inside its
+    git checkout — useful for read-only browsing from anywhere.
+    """
+    parser.add_argument(
+        "-p",
+        "--package",
+        type=str,
+        default=None,
+        help="Source package name (bypasses git-remote detection). "
+        "Lets you read bug info for a package without being inside its checkout.",
+    )
+
+
+def _resolve_package(args: argparse.Namespace, interactive: bool = True) -> str:
+    """Return the explicitly-passed package, or fall back to git detection.
+
+    When *interactive* is False and neither -p nor git detection yields a
+    package, returns an empty string (callers should treat this as "no
+    package") instead of prompting.
+    """
+    pkg: str | None = getattr(args, "package", None)
+    if pkg:
+        return pkg
+    from lpad.repo import detect_source_package
+
+    return detect_source_package(interactive=interactive)
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -32,9 +63,8 @@ def _resolve_status_filter(args: argparse.Namespace) -> list[str] | None:
 def cmd_list(args: argparse.Namespace) -> None:
     from lpad.bugs import fzf_select_bug, print_bug_summary
     from lpad.cache import load_cache
-    from lpad.repo import detect_source_package
 
-    package = detect_source_package()
+    package = _resolve_package(args)
     status_filter = _resolve_status_filter(args)
 
     bugs = load_cache(package, status_filter=status_filter)
@@ -64,9 +94,9 @@ def cmd_branch(args: argparse.Namespace) -> None:
     from lpad.auth import get_launchpad
     from lpad.branch import create_branch
     from lpad.bugs import fzf_select_bug, get_bug_by_id, get_package_bugs
-    from lpad.repo import detect_source_package, parse_changelog_series
+    from lpad.repo import parse_changelog_series
 
-    package = detect_source_package()
+    package = _resolve_package(args)
     status_filter = _resolve_status_filter(args)
 
     if args.bug_id is not None:
@@ -118,10 +148,9 @@ def cmd_report(args: argparse.Namespace) -> None:
     from lpad.bugs import LAUNCHPAD_BUG_URL
     from lpad.drafts import create_draft, get_draft, list_drafts, remove_draft, update_draft
     from lpad.editor import open_editor
-    from lpad.repo import detect_source_package
     from lpad.templates import resolve_template
 
-    package = detect_source_package()
+    package = _resolve_package(args)
 
     # Resolve the seed content: resume a draft, or use a template, or empty.
     draft = None
@@ -247,6 +276,11 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 def cmd_open(args: argparse.Namespace) -> None:
     from lpad.bugs import open_bug_in_browser
+
+    if args.bug_id is not None:
+        open_bug_in_browser(args.bug_id)
+        return
+
     from lpad.repo import get_current_branch, parse_bug_number_from_branch
 
     branch = get_current_branch()
@@ -268,26 +302,29 @@ def cmd_open(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     from lpad.auth import get_launchpad
     from lpad.bugs import print_bug_status
-    from lpad.repo import (
-        detect_source_package,
-        get_current_branch,
-        parse_bug_number_from_branch,
-    )
 
-    branch = get_current_branch()
-    if not branch:
-        print(col.error("Error: not inside a git repository."), file=sys.stderr)
-        sys.exit(1)
+    if args.bug_id is not None:
+        bug_id = args.bug_id
+    else:
+        from lpad.repo import get_current_branch, parse_bug_number_from_branch
 
-    bug_id = parse_bug_number_from_branch(branch)
-    if bug_id is None:
-        print(
-            col.error(f"Error: current branch '{branch}' does not look like {BRANCH_NAME_HINT}."),
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        branch = get_current_branch()
+        if not branch:
+            print(col.error("Error: not inside a git repository."), file=sys.stderr)
+            sys.exit(1)
 
-    package = detect_source_package()
+        bug_id = parse_bug_number_from_branch(branch)
+        if bug_id is None:
+            print(
+                col.error(
+                    f"Error: current branch '{branch}' does not look like {BRANCH_NAME_HINT}.\n"
+                    "Usage: lpad status [bug_id]"
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    package = _resolve_package(args, interactive=False) or None
     lp = get_launchpad()
     print_bug_status(lp, bug_id, package, verbose=args.verbose)
 
@@ -295,9 +332,8 @@ def cmd_status(args: argparse.Namespace) -> None:
 def cmd_subscribe(args: argparse.Namespace) -> None:
     from lpad.auth import get_launchpad
     from lpad.bugs import fzf_select_bug, get_package_bugs, subscribe_to_bug
-    from lpad.repo import detect_source_package
 
-    package = detect_source_package()
+    package = _resolve_package(args)
     status_filter = _resolve_status_filter(args)
 
     if args.bug_id is not None:
@@ -318,9 +354,9 @@ def cmd_sync(args: argparse.Namespace) -> None:
     from lpad.auth import get_launchpad
     from lpad.bugs import get_bug_comments, get_package_bugs
     from lpad.cache import invalidate_cache, invalidate_comment_cache
-    from lpad.repo import detect_source_package, get_current_branch, parse_bug_number_from_branch
+    from lpad.repo import get_current_branch, parse_bug_number_from_branch
 
-    package = detect_source_package()
+    package = _resolve_package(args)
     invalidate_cache(package)
     lp = get_launchpad()
     bugs = get_package_bugs(lp, package, force_refresh=True)
@@ -409,6 +445,40 @@ def cmd_preview(args: argparse.Namespace) -> None:
     print(col.bug_id(f"Bug #{bug_id}"))
     print(f"  {col.label('URL:')} {col.url(LAUNCHPAD_BUG_URL.format(bug_id=bug_id))}")
     print(col.info("  (run 'lpad sync' to populate the cache for full preview)"))
+
+
+# --- info subcommand ---
+
+
+def cmd_info(args: argparse.Namespace) -> None:
+    from lpad.bugs import print_package_dashboard
+    from lpad.cache import cache_info, load_cache
+
+    package = args.package
+    status_filter = _resolve_status_filter(args)
+
+    bugs = load_cache(package, status_filter=status_filter)
+    info_str = cache_info(package)
+
+    if bugs is None:
+        if args.refresh:
+            from lpad.auth import get_launchpad
+            from lpad.bugs import get_package_bugs
+
+            lp = get_launchpad()
+            bugs = get_package_bugs(lp, package, force_refresh=True, status=status_filter)
+            info_str = cache_info(package)
+        else:
+            print(
+                col.info(
+                    f"No fresh cache for {package}. "
+                    f"Run 'lpad info {package} --refresh' or 'lpad sync -p {package}' first."
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    print_package_dashboard(package, bugs, cache_info_str=info_str)
 
 
 # --- cache subcommand ---
@@ -531,7 +601,8 @@ def cmd_draft(args: argparse.Namespace) -> None:
 
     action = args.draft_action
     if action == "list":
-        drafts = list_drafts()
+        pkg_filter = getattr(args, "package", None)
+        drafts = list_drafts(package=pkg_filter)
         if not drafts:
             print(col.info("No drafts found."))
             return
@@ -652,6 +723,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "list",
         help="Browse bugs for the current source package via fzf",
     )
+    _add_package_arg(list_parser)
     _add_status_filter(list_parser)
 
     # branch
@@ -673,6 +745,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Bug ID to branch from (skips the fzf picker if given)",
     )
+    _add_package_arg(branch_parser)
     branch_parser.add_argument(
         "--series",
         "-s",
@@ -707,6 +780,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Drafts can be saved and resumed later."
         ),
     )
+    _add_package_arg(report_parser)
     report_parser.add_argument(
         "--template",
         type=str,
@@ -742,16 +816,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # open
-    subparsers.add_parser(
+    open_parser = subparsers.add_parser(
         "open",
-        help="Open the current branch's bug in the browser",
+        help="Open a bug in the browser (current branch's bug, or a given bug ID)",
+    )
+    open_parser.add_argument(
+        "bug_id",
+        nargs="?",
+        type=int,
+        default=None,
+        help="Bug ID to open (defaults to current branch's bug)",
     )
 
     # status
     status_parser = subparsers.add_parser(
         "status",
-        help="Print a compact status summary for the current branch's bug",
+        help="Print a compact status summary for a bug",
     )
+    status_parser.add_argument(
+        "bug_id",
+        nargs="?",
+        type=int,
+        default=None,
+        help="Bug ID to show status for (defaults to current branch's bug)",
+    )
+    _add_package_arg(status_parser)
     status_parser.add_argument(
         "--verbose",
         "-V",
@@ -772,13 +861,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Bug ID to subscribe to (skips the fzf picker if given)",
     )
+    _add_package_arg(subscribe_parser)
     _add_status_filter(subscribe_parser)
 
     # sync
-    subparsers.add_parser(
+    sync_parser = subparsers.add_parser(
         "sync",
         help=f"Refresh the bug cache (and comment cache if on {BRANCH_NAME_HINT})",
     )
+    _add_package_arg(sync_parser)
 
     # comments
     comments_parser = subparsers.add_parser(
@@ -867,7 +958,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     draft_sub = draft_parser.add_subparsers(dest="draft_action", metavar="<action>")
     draft_sub.required = True
-    draft_sub.add_parser("list", help="List all drafts")
+    draft_list_p = draft_sub.add_parser("list", help="List all drafts")
+    _add_package_arg(draft_list_p)
     draft_show_p = draft_sub.add_parser("show", help="Print a draft")
     draft_show_p.add_argument("id", type=str, help="Draft ID")
     draft_remove_p = draft_sub.add_parser("remove", help="Delete a draft")
@@ -882,6 +974,30 @@ def _build_parser() -> argparse.ArgumentParser:
     draft_prune_p.add_argument(
         "--dry-run", action="store_true", default=False, help="Preview without deleting"
     )
+
+    # info
+    info_parser = subparsers.add_parser(
+        "info",
+        help="Print a read-only dashboard for a source package (from cache)",
+        description=(
+            "Print a read-only overview of bugs for a source package: "
+            "counts by status/importance, top assignees, and cache age. "
+            "Reads from the local cache; use --refresh to fetch first.\n\n"
+            "Works outside a git checkout — pass the package name explicitly."
+        ),
+    )
+    info_parser.add_argument(
+        "package",
+        type=str,
+        help="Source package name (e.g. curl)",
+    )
+    info_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        default=False,
+        help="Fetch from Launchpad before printing (updates the cache).",
+    )
+    _add_status_filter(info_parser)
 
     # completion
     completion_parser = subparsers.add_parser(
@@ -927,6 +1043,7 @@ def main() -> None:
         "cache": cmd_cache,
         "template": cmd_template,
         "draft": cmd_draft,
+        "info": cmd_info,
         "completion": cmd_completion,
     }
 

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`lpad info <package>`**: read-only package dashboard — total bug count,
+  breakdowns by status and importance, top assignees, and remote-watch tally.
+  Reads from the local cache; `--refresh` fetches first. Accepts
+  `--status=<csv>` / `--all`.
+- **`-p` / `--package` flag** on `list`, `branch`, `report`, `status`,
+  `subscribe`, `sync`, and `draft list`: bypasses git-remote source-package
+  detection so bug data can be browsed from outside a checkout.
+- **Optional `bug_id` positional** on `lpad open` and `lpad status`: look up
+  a bug directly without a git repo or branch context. Omitting it preserves
+  the previous branch-parsing behaviour.
+
+### Changed
+
+- `lpad status` without a resolvable package now prints bug-level status only
+  (no Ubuntu task matching) instead of erroring; `print_bug_status` accepts
+  `package_name: str | None`.
+- `detect_source_package()` gained an `interactive` parameter; the
+  non-interactive variant returns an empty string rather than prompting.
+- `draft list` accepts `-p <pkg>` to filter drafts by source package.
+- fzf preview window reduced from 50% to 40% of the terminal width.
+- `load_cache()` accepts `ignore_status_filter`; the hidden fzf preview uses
+  it to look up bugs by ID regardless of the status filter that populated
+  the cache.
+
+### Fixed
+
+- `lpad list` fzf line no longer loses the bug title on narrow terminals:
+  fixed columns are tightened, long titles truncate with an ellipsis, and
+  the assignee is dropped when horizontal space is scarce.
+
 ## [0.1.0] - 2026-07-06
 
 Initial release.

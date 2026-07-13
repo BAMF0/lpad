@@ -341,6 +341,57 @@ def print_bug_summary(bug: BugSummary) -> None:
     _print_bug_watches(bug.watches)
 
 
+def print_package_dashboard(
+    package: str,
+    bugs: list[BugSummary],
+    cache_info_str: str | None = None,
+) -> None:
+    """Print a read-only overview of bugs for a source package.
+
+    Pure function: no API calls, no cache I/O — receives already-fetched
+    data. Shows total count, breakdowns by status/importance, top
+    assignees, and the number of bugs carrying remote watches.
+    """
+    from collections import Counter
+
+    lbl = col.label
+
+    print(f"{col.title(package)}  ", end="")
+    if cache_info_str:
+        print(col.info(f"({cache_info_str})"))
+    else:
+        print()
+
+    if not bugs:
+        print(col.info("No bugs in cache for this package."))
+        return
+
+    print(f"  {lbl('Total bugs:'):<20} {len(bugs)}")
+
+    # Status breakdown
+    status_counts = Counter(b.status for b in bugs)
+    print(f"  {lbl('By status:'):<20}")
+    for status, count in status_counts.most_common():
+        print(f"    {col.status_color(status):<24} {count}")
+
+    # Importance breakdown
+    importance_counts = Counter(b.importance for b in bugs)
+    print(f"  {lbl('By importance:'):<20}")
+    for importance, count in importance_counts.most_common():
+        print(f"    {col.importance_color(importance):<24} {count}")
+
+    # Top assignees
+    assignee_counts = Counter(b.assignee or "unassigned" for b in bugs)
+    top_n = 5
+    print(f"  {lbl(f'Top assignees (of {len(assignee_counts)}):'):<20}")
+    for assignee, count in assignee_counts.most_common(top_n):
+        print(f"    {col.assignee(assignee):<24} {count}")
+
+    # Bugs with remote watches
+    with_watches = sum(1 for b in bugs if b.watches)
+    print(f"  {lbl('With remote watches:'):<20} {with_watches}")
+
+
 def get_bug_by_id(lp: "Launchpad", bug_id: int) -> Any:
     """Return a Launchpad bug object by ID.
 
@@ -366,52 +417,58 @@ def get_bug_by_id(lp: "Launchpad", bug_id: int) -> Any:
 def print_bug_status(
     lp: "Launchpad",
     bug_id: int,
-    package_name: str,
+    package_name: str | None = None,
     verbose: bool = False,
 ) -> None:
     """Print a live status summary for the given bug via the Launchpad API.
+
+    When *package_name* is given, the Ubuntu task for that package is
+    matched and its status/importance/assignee are shown. When None, only
+    bug-level fields are displayed (useful when called outside a source
+    tree without -p).
 
     When verbose=True, also prints the bug heat and full description,
     word-wrapped to the current terminal width.
     """
     bug = get_bug_by_id(lp, bug_id)
 
-    # Preferred task target names for an Ubuntu source package.
-    canonical_targets = {
-        f"{package_name} (Ubuntu)",
-        f"{package_name} (Ubuntu {package_name})",
-    }
     task_info = None
-    for task in bug.bug_tasks:
-        try:
-            target_name = task.bug_target_name
-        except Exception:
-            continue
-        if target_name in canonical_targets or (
-            target_name == package_name
-            or (package_name in target_name and "ubuntu" in target_name.lower())
-        ):
-            assignee = None
+    if package_name:
+        # Preferred task target names for an Ubuntu source package.
+        canonical_targets = {
+            f"{package_name} (Ubuntu)",
+            f"{package_name} (Ubuntu {package_name})",
+        }
+        for task in bug.bug_tasks:
             try:
-                if task.assignee:
-                    assignee = task.assignee.display_name
+                target_name = task.bug_target_name
             except Exception:
-                pass
-            try:
-                status = task.status
-            except Exception:
-                status = "(unknown)"
-            try:
-                importance = task.importance
-            except Exception:
-                importance = "Undecided"
-            task_info = {
-                "status": status,
-                "importance": importance,
-                "assignee": assignee or "unassigned",
-                "target": target_name,
-            }
-            break
+                continue
+            if target_name in canonical_targets or (
+                target_name == package_name
+                or (package_name in target_name and "ubuntu" in target_name.lower())
+            ):
+                assignee = None
+                try:
+                    if task.assignee:
+                        assignee = task.assignee.display_name
+                except Exception:
+                    pass
+                try:
+                    status = task.status
+                except Exception:
+                    status = "(unknown)"
+                try:
+                    importance = task.importance
+                except Exception:
+                    importance = "Undecided"
+                task_info = {
+                    "status": status,
+                    "importance": importance,
+                    "assignee": assignee or "unassigned",
+                    "target": target_name,
+                }
+                break
 
     try:
         title = bug.title

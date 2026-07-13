@@ -28,11 +28,14 @@ def _get_remote_url(remote: str = "origin") -> str | None:
         return None
 
 
-def detect_source_package() -> str:
+def detect_source_package(interactive: bool = True) -> str:
     """Detect the Ubuntu source package name from the current git remote.
 
-    Tries 'origin' first, then all remotes. Falls back to prompting the user
-    if no Launchpad source package URL is found.
+    Tries 'origin' first, then all remotes. When *interactive* is True
+    (the default), falls back to prompting the user if no Launchpad source
+    package URL is found; when False, returns an empty string instead so
+    callers can degrade gracefully (e.g. show bug-level status without a
+    package).
 
     Returns the source package name (e.g. 'curl').
     """
@@ -60,6 +63,9 @@ def detect_source_package() -> str:
                     return m.group(1)
     except subprocess.CalledProcessError:
         pass
+
+    if not interactive:
+        return ""
 
     # Fall back to user prompt
     print(
